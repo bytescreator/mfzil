@@ -197,7 +197,7 @@ class Ringer:
 
                         secs.update({day_offset+i-AMP_INIT_BEFORE: AmpPowerTask()})
                         secs.update({day_offset+i: SoundTask(entry["SoundFile"])})
-                        secs.update({day_offset+i+AMP_CLOSE_AFTER: AmpPowerTask()})
+                        secs.update({day_offset+i+AMP_CLOSE_AFTER: AmpUnPowerTask()})
 
         return secs
 
