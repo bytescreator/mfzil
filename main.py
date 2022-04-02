@@ -1,8 +1,8 @@
-import os
-import json
+import os, sys
 import time
 
 import logging
+
 logging.basicConfig(level=10)
 logger = logging.getLogger('zilscheduler')
 
@@ -10,21 +10,27 @@ UTCZone = 3
 POLL_PERIOD = 1
 
 import marshmallow
+import serial
 import vlc
 
 ACCEPTED_DAYS = ['pazartesi', 'sali', 'carsamba', 'persembe', 'cuma', 'cumartesi', 'pazar']
-ALLOWABLE_SLEEP_DRIFT = 5
+ALLOWABLE_SLEEP_DRIFT = 20 # Bilgisayarın uykuya geçip zamanı kaçırması durumunda maks zaman kayması
+AMP_INIT_BEFORE = 3 # Amfiyi x sn önce aç
+AMP_CLOSE_AFTER = 20 # Amfiyi x sn sonra kapa 
+# VLC Eventleri sürekli olarak thread spawnlayıp kapatmadığından zaman aralıklı yapmak daha iyi olacak.
+
+# Config Schemas
 
 class TimeSchema(marshmallow.Schema):
-    def __check_ring_sound_location(data):
+    def __check_ring_sound_location(data) -> None:
         if not os.path.exists(data):
             raise ValueError('Zil Sesi Bulunamadı.')
 
-    def __check_days(day):
+    def __check_days(day:str) -> None:
         if not day in ACCEPTED_DAYS:
             raise marshmallow.exceptions.ValidationError('Konfigürasyon hatası, bilinmeyen gün.')
 
-    def __check_time(time):
+    def __check_time(time:str) -> None:
         x = time.split(':')
         if len(x) != 2:
             raise marshmallow.exceptions.ValidationError('Konfigürasyon hatası. Saatler ile ilgili format hatası var.')
@@ -43,7 +49,7 @@ class TimeSchema(marshmallow.Schema):
             raise marshmallow.exceptions.ValidationError('Konfigürasyon hatası. Saatler ile ilgili format hatası var.')
 
     @marshmallow.post_load
-    def last_check(self, data, **kwargs):
+    def last_check(self, data:dict, **kwargs:dict) -> dict:
         for index, time in enumerate(data['times']):
             x=time.split(':')
             data['times'][index] = int(x[0])*3600+int(x[1])*60
@@ -66,8 +72,33 @@ class TimeSchema(marshmallow.Schema):
 class JSONConfigSchema(marshmallow.Schema):
     RingTimes = marshmallow.fields.List(marshmallow.fields.Nested(TimeSchema), required=True)
 
+# Task definitions
+class SoundTask:
+    def __init__(self, soundFile:str):
+        self.soundFile = soundFile
+    
+    def __repr__(self):
+        return f"<SoundTask soundFile='{self.soundFile}'>"
+
+class AmpPowerTask:
+    def __init__(self):
+        pass
+    
+    def __repr__(self):
+        return "<AmpPowerTask>"
+
+class AmpUnPowerTask:
+    def __init__(self):
+        pass
+    
+    def __repr__(self):
+        return "<AmpUnPowerTask>"
+
+
 class Ringer:
-    def __init__(self, RingTimes):
+    def __init__(self, RingTimes:dict):
+        self.__amp_control_enabled = True
+
         self.week_second_at_start = self.seconds_since_weekstart()+3600*UTCZone
         logger.info("UTC Zone'u : %s" % UTCZone)
         logger.info("Pazartesiden beri geçen saniye: %s" % self.week_second_at_start)
@@ -80,30 +111,77 @@ class Ringer:
             logger.debug("Zil Sesi: %s" % entry["SoundFile"])
             logger.debug("Açıklama: %s" % entry.get("description"))
 
-            logger.debug("Zamanlar : \n\n%s\n\n" % "  \n".join(["{}. Girdi | {}:{}".format(_index+1, u//3600, u%3600//60) for _index, u in enumerate(entry["times"])]))
+            logger.debug("Zamanlar : \n\n%s\n\n" % "  \n".join(
+                ["{}. Girdi | {}".format(_index+1, self.__time_prettify(u)) \
+                    for _index, u in enumerate(entry["times"])]))
 
         logger.info("VLC MediaPlayer Oluşuruluyor...")
         self.player = vlc.MediaPlayer()
 
+        logger.info("Amfi açma kapama aygıtına bağlantı başlatılıyor...")
+        self.init_amplifier()
+        logger.info("Amfi açma kapama aygıtına bağlanıldı.")
 
         logger.info("Çalma döngüsü başlatılıyor...")
-        while True:
-            self.sleeper_loop()
+    
+        with self.__amp_serial:
+            while True:
+                self.sleeper_loop()
+
+    def init_amplifier(self) -> None:
+        if len(sys.argv) <= 1:
+            self.__amp_control_enabled = False
+            self.__amp_serial = serial.Serial()
+            return
+
+        self.__amp_serial = serial.Serial(sys.argv[1], baudrate=9600, timeout=1)
+        self.__amp_serial.write(b'init\n')
+
+        if self.__amp_serial.readline() != b'inited':
+            logger.error('Serial Bağlantı ile ilgili bir problem oluştu.')
+            self.__amp_serial.close()
+            raise Exception("Serial Bağlantı esnasında bir problem oluştu.")
+
+    def enable_amplifier(self, event_contents=None):
+        if self.__amp_control_enabled:
+            self.__amp_serial.write(b'power_amp\n')
+            if self.__amp_serial.readline() != b"1":
+                logger.critical("Amfi gücü açılamadı.")
+                raise RuntimeError("Amfi gücü açılamadı.")
+            logger.info("Amfi Açıldı.")
+
+        else:
+            logger.warning("Amfi kontrolü kapalı, açılmış gibi davranıldı.")
+
+    def disable_amplifier(self, event_contents=None):
+        if self.__amp_control_enabled:
+            self.__amp_serial.write(b'unpower_amp\n')
+            if self.__amp_serial.readline() != b"1":
+                logger.critical("Amfi gücü kapatılamadı.")
+                raise RuntimeError("Amfi gücü kapatılamadı.")
+            logger.info("Amfi Kapatıldı.")
+
+        else:
+            logger.warning("Amfi kontrolü kapalı, kapatılmış gibi davranıldı.")
 
     @staticmethod
     def seconds_since_weekstart():
         return ((time.time()+259200+UTCZone*3600) % (604800))
 
     @staticmethod
-    def __precise_sleep(sec):
+    def __precise_sleep(sec:float) -> float:
         if sec < 0:
-            return
+            return time.time()
 
         a = time.time()
         while((time.time() - a) <= sec):
             time.sleep(POLL_PERIOD)
 
         return a
+
+    @staticmethod
+    def __time_prettify(sec:float) -> str:
+        return f"{ACCEPTED_DAYS[sec // 86400]} | {(sec % 86400) // 3600}:{(sec % 3600) // 60}.{sec % 60}"
 
     def calc_ring_intervals(self):
         self.week_second_at_start = self.seconds_since_weekstart()
@@ -116,7 +194,10 @@ class Ringer:
                         if (day_offset+i) in secs:
                             logger.critical("Çift zaman bulundu konfigürasyonu kontrol ediniz.")
                             raise ValueError("Çift zaman bulundu konfigürasyonu kontrol ediniz.")
-                        secs.update({day_offset+i: entry["SoundFile"]})
+
+                        secs.update({day_offset+i-AMP_INIT_BEFORE: AmpPowerTask()})
+                        secs.update({day_offset+i: SoundTask(entry["SoundFile"])})
+                        secs.update({day_offset+i+AMP_CLOSE_AFTER: AmpPowerTask()})
 
         return secs
 
@@ -128,12 +209,12 @@ class Ringer:
         times.sort()
 
         for t in times:
-            logger.info(" %s:%s.%s için bekleniyor... Çalınacak zil: %s" % (ACCEPTED_DAYS[(t//86400)], (t%86400//3600), (t%3600)//60, x[t]))
+            logger.info(" %s için bekleniyor... Görev: %s" % (self.__time_prettify(t), x[t]))
             try:
                 target_sleep = t - self.seconds_since_weekstart()
                 start_time = self.__precise_sleep(target_sleep)
             except KeyboardInterrupt:
-                if input("Zil pas geçilsin mi (Y/N) ?").upper() == "Y":
+                if input("Görev pas geçilsin mi (Y/N) ?").upper() == "Y":
                     self.player.stop()
                     logger.info(" %s:%s.%s pas geçildi." % (ACCEPTED_DAYS[(t//86400)], (t%86400//3600), (t%3600)//60))
                     continue
@@ -144,10 +225,17 @@ class Ringer:
                 logger.warning("Muhtemel uyku nedenli zaman kayması çok fazla olduğundan zil çalınmayacak.")
                 continue
 
-            if not self.player.is_playing():
-                self.player.stop()
-                self.player.set_mrl(x[t])
-                self.player.play()
+            if isinstance(x[t], SoundTask):
+                if not self.player.is_playing():
+                    self.player.stop()
+                    self.player.set_mrl(x[t].soundFile)
+                    self.player.play()
+            
+            elif isinstance(x[t], AmpPowerTask):
+                self.enable_amplifier()
+            
+            elif isinstance(x[t], AmpUnPowerTask):
+                self.disable_amplifier()
 
             else:
                 logger.warning("Zil bitmeden başka bir zil çalınmaya çalışıldı, pas geçiliyor...")
