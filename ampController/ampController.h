@@ -7,11 +7,11 @@
 
 #define SUCCESS 255
 #define FAILURE 127
-
-size_t opstringLen;
-char buf[8];
+#define ERROR 128
 
 struct Operation {
-    uint8_t opcode = FAILURE;
+    uint8_t opcode;
     uint8_t portStatus;
 };
+
+char opstring[sizeof(Operation)];

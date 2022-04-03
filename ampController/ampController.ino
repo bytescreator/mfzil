@@ -6,47 +6,41 @@ void dispatcher(Operation* opstring) {
     switch (opstring->opcode) {
         case PING:
             returnData.opcode = PONG;
+            break;
 
         case POWER_AMP:
             digitalWrite(AMP_PIN, HIGH);
             returnData.opcode = SUCCESS;
+            break;
 
         case UNPOWER_AMP:
             digitalWrite(AMP_PIN, LOW);
             returnData.opcode = SUCCESS;
+            break;
         
         case STATUS:
             returnData.portStatus = PORTB0;
             returnData.opcode = SUCCESS;
+            break;
+        
+        default:
+            returnData.opcode = ERROR;
+            break;
     }
 
     Serial.write((char*) &returnData, sizeof(returnData));
-    Serial.write((char) 0x10);
+    Serial.flush();
 }
 
 void setup() {
     Serial.begin(9600);
+    while(!Serial) {};
     pinMode(AMP_PIN, OUTPUT);
 }
 
 void loop() {
-    char* opstring = (char*) malloc(sizeof(buf));
-    opstringLen = sizeof(buf);
+    memset(opstring, 0x00, sizeof(Operation));
 
-    memset(buf, 0x00, sizeof(buf));
-    memset(opstring, 0x00, opstringLen);
-
-    opstringLen += (size_t) Serial.readBytesUntil((char) 0x10, buf, sizeof(buf));
-    opstring = (char*) realloc(opstring, opstringLen);
-    strncpy(opstring, buf, sizeof(buf));
-
-    while(Serial.available()) {
-        opstringLen += (size_t) Serial.readBytesUntil((char) 0x10, buf, sizeof(buf));
-        opstring = (char*) realloc(opstring, opstringLen);
-        strncpy(opstring, buf, sizeof(buf));
-    }
-
+    if (Serial.readBytes(opstring, sizeof(Operation)) != sizeof(opstring)) return;
     dispatcher((Operation*) opstring);
-
-    free(opstring);
 }
