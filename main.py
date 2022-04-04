@@ -137,20 +137,18 @@ class Ringer:
 
         self.__amp_serial = serial.Serial(sys.argv[1], baudrate=9600, timeout=1)
         self.__amp_serial.write(struct.pack('<BB', 0, 0)) # ping.
-        self.__amp_serial.write(b'\n')
 
-        if struct.unpack('<BB', self.__amp_serial.readline())[0] != 1: # pong
-            logger.error('Serial Bağlantı ile ilgili bir problem oluştu.')
+        if struct.unpack('<BB', self.__amp_serial.read(2))[0] != 1: # pong
+            logger.critical('Serial Bağlantı ile ilgili bir problem oluştu.')
             self.__amp_serial.close()
             raise Exception("Serial Bağlantı esnasında bir problem oluştu.")
 
     def enable_amplifier(self, event_contents=None):
         if self.__amp_control_enabled:
             self.__amp_serial.write(struct.pack('<BB', 3, 0))
-            self.__amp_serial.write(b'\n')
 
-            if struct.unpack('<BB', self.__amp_serial.readline())[0] != 255:
-                logger.critical("Amfi gücü açılamadı.")
+            if struct.unpack('<BB', self.__amp_serial.read(2))[0] != 255:
+                logger.error("Amfi gücü açılamadı.")
                 raise RuntimeError("Amfi gücü açılamadı.")
             logger.info("Amfi Açıldı.")
 
@@ -160,10 +158,9 @@ class Ringer:
     def disable_amplifier(self, event_contents=None):
         if self.__amp_control_enabled:
             self.__amp_serial.write(struct.pack('<BB', 4, 0))
-            self.__amp_serial.write(b'\n')
 
-            if struct.unpack('<BB', self.__amp_serial.readline())[0] != 255:
-                logger.critical("Amfi gücü kapatılamadı.")
+            if struct.unpack('<BB', self.__amp_serial.read(2))[0] != 255:
+                logger.error("Amfi gücü kapatılamadı.")
                 raise RuntimeError("Amfi gücü kapatılamadı.")
             logger.info("Amfi Kapatıldı.")
 

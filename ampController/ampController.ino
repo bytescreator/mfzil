@@ -28,7 +28,7 @@ void dispatcher(Operation* opstring) {
             break;
     }
 
-    Serial.write((char*) &returnData, sizeof(returnData));
+    Serial.write((char*) &returnData, sizeof(Operation));
     Serial.flush();
 }
 
